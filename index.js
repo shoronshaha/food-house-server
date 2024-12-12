@@ -32,13 +32,19 @@ async function run() {
     const cartCollection = client.db("foodHouse").collection("carts");
 
     // users related api
+
+    app.get("/users", async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       const query = { email: user.email };
       const existingUser = await userCollection.findOne(query);
       const result = await userCollection.insertOne(user);
       if (existingUser) {
-        return res.send({ message: "user alreadu exists", insertedId: null });
+        return res.send({ message: "user already exists", insertedId: null });
       }
       res.send(result);
     });
