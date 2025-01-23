@@ -6,7 +6,29 @@ require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
 // middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: process.env.CLIENT_BASE_URL,
+    methods: ["GET", "POST", "DELETE", "PUT", "PATCH"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Cache-Control",
+      "Expires",
+      "Pragma",
+    ],
+    credentials: true,
+  })
+);
+
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", process.env.CLIENT_BASE_URL);
+  res.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Credentials", "true");
+  next();
+});
+
 app.use(express.json());
 
 //str
@@ -45,28 +67,38 @@ async function run() {
 
     // middlewares
     const verifyToken = (req, res, next) => {
-      console.log("inside verify token", req.headers.authorization);
-      if (!req.headers.authorization) {
-        return res.status(401).send({ message: "unauthorized access" });
+      const authHeader = req.headers.authorization;
+
+      if (!authHeader) {
+        console.log("No Authorization header present");
+        return res
+          .status(401)
+          .send({ message: "Unauthorized: No token provided" });
       }
-      const token = req.headers.authorization.split(" ")[1];
+
+      const token = authHeader.split(" ")[1];
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-          return res.status(401).send({ message: "unauthorized access" });
+          console.log("Token verification error:", err.message);
+          return res.status(403).send({ message: "Forbidden: Invalid token" });
         }
         req.decoded = decoded;
         next();
       });
     };
+
     //use verify admin after verifyToken
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === "admin";
-      if (!isAdmin) {
-        return res.status(403).send({ message: "forbidden access" });
+
+      // Fetch the user from the database
+      const user = await userCollection.findOne({ email });
+      if (!user || user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Admin access required" });
       }
+
       next();
     };
 
@@ -77,32 +109,32 @@ async function run() {
 
     // users related api
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
-      const result = await userCollection.find().toArray();
-      res.send(result);
+      const users = await userCollection.find().toArray();
+      res.send(users);
     });
 
     app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
-      if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "forbidden access" });
+      const user = await userCollection.findOne({ email });
+
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
       }
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      let admin = false;
-      if (user) {
-        admin = user?.role === "admin";
-      }
-      res.send({ admin });
+
+      const isAdmin = user.role === "admin";
+      res.send({ admin: isAdmin });
     });
 
     app.post("/users", async (req, res) => {
       const user = req.body;
-      const query = { email: user.email };
-      const existingUser = await userCollection.findOne(query);
+      const existingUser = await userCollection.findOne({ email: user.email });
 
       if (existingUser) {
-        return res.send({ message: "user already exists", insertedId: null });
+        return res.send({ message: "User already exists", insertedId: null });
       }
+
+      // Assign default role
+      user.role = user.role || "user";
       const result = await userCollection.insertOne(user);
       res.send(result);
     });
@@ -126,8 +158,7 @@ async function run() {
 
     app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await userCollection.deleteOne(query);
+      const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     });
     // menu related apis
@@ -168,8 +199,7 @@ async function run() {
 
     app.delete("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await menuCollection.deleteOne(query);
+      const result = await menuCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     });
 
@@ -210,17 +240,15 @@ async function run() {
     // payment intent
     app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
-      const amount = parseInt(price * 100);
-      console.log(amount, "amount inside the intent");
+      const amount = price * 100;
 
       const paymentIntent = await stripe.paymentIntents.create({
-        amount: amount,
+        amount,
         currency: "usd",
         payment_method_types: ["card"],
       });
-      res.send({
-        clientSecret: paymentIntent.client_secret,
-      });
+
+      res.send({ clientSecret: paymentIntent.client_secret });
     });
 
     app.get("/payments/:email", verifyToken, async (req, res) => {
